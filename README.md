@@ -3,7 +3,15 @@
 `signallm` is a local LLM agent with hands on an SDR: it tunes, scans, decodes, and narrates the spectrum:
 
 ```rust
-signallm> I have connect the Blade RF device. What is in 2450 MHz now?
+$ python3 -m signallm
+SDR: BladeRF not connected. Range 70-6000 MHz.
+     (checked again before every measurement, so you can plug it in later)
+LLM: qwen3:4b-instruct via ollama at http://localhost:11434
+Type /help for commands.
+
+signallm>
+signallm>
+signallm> I have connected the BladeRF device. What is currently in 2450 MHz now?
 
   [12:09:10] question sent
   [12:09:15] llm #1 5.3s | prompt 1185 tok/1.4s | gen 24 tok/3.8s (6.3 tok/s) | wants: record
@@ -33,7 +41,7 @@ For now a tool currently support `BladeRF 2.0 xA9` SDR. The development status i
 | 0 | Hardware: BladeRF 2.0 xA9 + SoapySDR | done |
 | 1 | Spectrum -> JSON facts | done |
 | 2 | Level-0 heuristics (WiFi / BLE / microwave / empty) | done, validated on synthetic signals only |
-| 3 | LLM agent (tool calling, interactive chat) | done, not yet tried with a real model |
+| 3 | LLM agent (tool calling, interactive chat) | done |
 | 4 | Decoder registry (rtl_433, ...), run over recorded files | planned |
 | 5 | CNN classifier for unknown signals | planned |
 
