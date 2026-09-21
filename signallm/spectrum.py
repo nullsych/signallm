@@ -3,6 +3,7 @@ from dataclasses import dataclass, asdict
 
 import numpy as np
 from scipy import signal
+from scipy import stats
 from scipy.ndimage import median_filter, uniform_filter1d
 
 from .capture import Capture
@@ -29,6 +30,28 @@ def noise_floor(f: np.ndarray, db: np.ndarray, win_hz: float = 4e6) -> np.ndarra
     return median_filter(low, size=k, mode="nearest")
 
 
+def time_floor(cap: Capture, f_out: np.ndarray, max_secs: float = 0.5, nperseg: int = 512,
+               smooth_bins: int = 16, quantile: float = 0.1) -> np.ndarray:
+    """Noise floor from the quiet moments in time: a low quantile of the (frequency-smoothed)
+    spectrogram per bin, interpolated onto f_out (dB, same scale as psd()).
+
+    Unlike the frequency-median floor this stays correct for bursty signals that fill the whole
+    span (WiFi, a microwave oven): the gaps between bursts show the true noise. A signal that is
+    on continuously still raises it, which no single capture can tell apart from noise.
+    """
+    iq = cap.iq[: int(max_secs * cap.fs)]
+    f, _, sxx = signal.spectrogram(iq, fs=cap.fs, nperseg=nperseg, noverlap=0,
+                                   return_onesided=False, detrend=False, mode="psd")
+    sxx = uniform_filter1d(sxx, smooth_bins, axis=0, mode="nearest")
+    low = np.quantile(sxx, quantile, axis=1)
+    # smoothed noise power is ~ chi2(2k)/(2k) around its mean: undo the bias of the low quantile
+    k = smooth_bins
+    low = low / (stats.chi2.ppf(quantile, 2 * k) / (2 * k))
+    order = np.argsort(f)
+    fa = f[order] + cap.center_hz
+    return np.interp(f_out, fa, 10 * np.log10(low[order] + 1e-20))
+
+
 @dataclass
 class Signal:
     center_hz: float
@@ -49,7 +72,7 @@ def find_signals(cap: Capture, thresh_db: float = 6.0, merge_hz: float = 150e3,
                  min_bw_hz: float = 0.0, rbw_hz: float = 5e3) -> dict:
     f, db = psd(cap, rbw_hz)
     df = f[1] - f[0]
-    floor = noise_floor(f, db)
+    floor = np.minimum(noise_floor(f, db), time_floor(cap, f))
     sm = uniform_filter1d(db, max(1, int(3 * rbw_hz / df) | 1))  # smoothing against noise ripple
     snr = sm - floor
 

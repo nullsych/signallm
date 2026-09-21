@@ -3,6 +3,7 @@ import argparse
 import json
 
 from .capture import Capture, SoapyRadio, load_sc16
+from .heuristics import interpret
 from .spectrogram import burst_stats, save_png, stft_db
 from .spectrum import find_signals
 from .spurs import dual_capture_filter
@@ -27,7 +28,7 @@ def analyze(cap_a: Capture, cap_b: Capture | None = None, png: str | None = None
     if png:
         save_png(t, f, db, png, signals)
 
-    return {
+    facts = {
         "center_hz": cap_a.center_hz,
         "span_hz": ra["span_hz"],
         "duration_s": round(cap_a.duration, 3),
@@ -36,6 +37,8 @@ def analyze(cap_a: Capture, cap_b: Capture | None = None, png: str | None = None
         "signals": [s.to_dict() for s in signals],
         "spurs_rejected": [s.to_dict() for s in spurs],
     }
+    facts["interpretation"] = interpret(facts)
+    return facts
 
 
 def main():

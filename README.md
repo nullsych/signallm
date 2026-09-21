@@ -10,7 +10,7 @@ For now a tool currently support `BladeRF 2.0 xA9` SDR. The development status i
 |------|-------------|-------|
 | 0 | Hardware: BladeRF 2.0 xA9 + SoapySDR | done |
 | 1 | Spectrum -> JSON facts | done |
-| 2 | Level-0 heuristics (WiFi / BLE / empty) | planned |
+| 2 | Level-0 heuristics (WiFi / BLE / microwave / empty) | done, validated on synthetic signals only |
 | 3 | LLM agent (Ollama tool calling) | planned |
 | 4 | Decoder registry (rtl_433, ...), run over recorded files | planned |
 | 5 | CNN classifier for unknown signals | planned |
@@ -54,6 +54,27 @@ Given a capture (live or from a file), `signallm.facts` prints a JSON document w
 - Python 3.10+, `numpy`, `scipy`, `matplotlib` (PNG only)
 - For live capture: `python3-soapysdr`, `soapysdr0.8-module-bladerf`
 
+### Level-0 heuristics
+
+`facts.analyze()` also returns an `interpretation` block: a label, confidence (0-1) and
+human-readable evidence for every signal, plus a capture-level verdict and one-line summary.
+
+| Label | Rule (2.4 GHz ISM band only) |
+|-------|------------------------------|
+| `empty` (verdict) | no signal above the noise floor |
+| `wifi` | flat plateau >= 8 MHz (or cut by the span edge), bursty; channel 1-13 estimated from the visible edges |
+| `ble_advertising` | 0.8-2.6 MHz wide, sparse short bursts, centered on 2402 / 2426 / 2480 MHz |
+| `ble_or_zigbee` | same shape on the 2 MHz BLE grid but not an advertising channel |
+| `microwave_oven` | wide, on/off envelope with a 14-22 ms period (50/60 Hz mains), duty 30-70% |
+| `carrier` / `narrowband_pulses` | <= 200 kHz wide; low confidence, may be an SDR spur |
+| `wideband` / `narrowband_modulated` | generic labels outside 2.4 GHz |
+
+The noise floor is the lower of a frequency-median estimate and a per-bin low quantile over time.
+The time estimate is what makes bursty signals that fill the whole span (WiFi, microwave oven)
+visible: the gaps between bursts show the real noise.
+
+Example summary: `Around 2437 MHz (+/-8 MHz): wifi ch6 at 2437.0 MHz (0.90).`
+
 ## Usage
 
 Live capture (two captures: center and center + 0.2 * fs, spur rejection on):
@@ -65,7 +86,7 @@ python3 -m signallm.facts --center 2437e6 --gain 60
 From an interleaved int16 (sc16) file, e.g. saved with `bladeRF-cli`:
 
 ```sh
-python3 -m signallm.facts --file test/cap.bin --center 2437e6 --fs 20e6
+python3 -m signallm.facts --file tests/cap.bin --center 2437e6 --fs 20e6
 python3 -m signallm.facts --file a.bin --center 2437e6 --file-b b.bin --center-b 2441e6
 ```
 
@@ -84,6 +105,15 @@ third-party scripts) will still hit the problem. To fix it system-wide, either r
 `/usr/local/lib/libbladeRF*` and run `ldconfig`, or rebuild `SoapyBladeRF` against the custom
 libbladeRF.
 
+## Tests
+
+```sh
+python3 -m unittest discover -s tests -t .
+```
+
+Tests run on synthetic 2.4 GHz captures from `tests/synth.py` (WiFi plateau, BLE advertising,
+microwave oven, CW, noise with different tilts and seeds), no hardware needed. Takes ~2 minutes.
+
 ## Layout
 
 ```
@@ -92,6 +122,7 @@ signallm/
   spectrum.py     Welch PSD, noise floor, peak grouping into signals
   spurs.py        dual-capture spur rejection
   spectrogram.py  STFT, burst statistics, PNG output
+  heuristics.py   level-0 rules: signal facts -> labels, confidence, evidence
   facts.py        orchestrator and CLI (python3 -m signallm.facts)
 ```
 
@@ -104,6 +135,9 @@ signallm/
 
 ## Limitations
 
-- No automated tests yet; thresholds (6 dB over noise, 150 kHz merge gap) were tuned on a single
-  lightly occupied 2.4 GHz capture.
-- Signals are not classified yet: the output is raw facts (WiFi/BLE rules come in step 2).
+- Heuristics are validated only on synthetic signals plus one real lightly occupied capture, which
+  has no WiFi. Real WiFi/BLE/microwave captures are needed to tune the thresholds.
+- A signal that is on continuously and fills the whole span (no gaps) raises the noise estimate and
+  can hide itself; a single capture cannot tell it from noise.
+- A narrow signal inside a WiFi plateau is merged into the plateau and not reported separately.
+- 5 GHz WiFi, Zigbee channel plan and other bands are not covered by the rules yet.
