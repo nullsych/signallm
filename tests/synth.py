@@ -93,3 +93,19 @@ def carrier(offset_hz, snr_db=30):
         t = np.arange(n) / FS
         return (np.exp(2j * np.pi * offset_hz * t) * np.sqrt(10 ** (snr_db / 10) * 5e3 / FS)).astype(np.complex64)
     return c
+
+
+class SynthRadio:
+    """Radio interface over a synthetic scene: [(absolute_freq_hz, factory(offset_hz) -> component)]."""
+
+    def __init__(self, scene=()):
+        self.scene, self.calls, self._seed = list(scene), [], 0
+
+    def probe(self):
+        return {"freq_hz": [70e6, 6e9], "sample_rate_hz": [520834, 61.44e6], "bandwidth_hz": [200e3, 56e6]}
+
+    def capture(self, center_hz, fs, secs, gain_db=None, **_):
+        self.calls.append((center_hz, fs, secs))
+        self._seed += 1
+        comps = [f(f_abs - center_hz) for f_abs, f in self.scene if abs(f_abs - center_hz) < FS / 2 * 0.95]
+        return make(*comps, secs=secs, seed=self._seed, center=center_hz)

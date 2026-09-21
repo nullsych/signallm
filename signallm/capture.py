@@ -92,3 +92,26 @@ class SoapyRadio:
             dev.deactivateStream(st)
             dev.closeStream(st)
         return Capture(out[skip:], center_hz, fs)
+
+
+class ReplayRadio:
+    """Radio backed by a recorded sc16 file: lets the agent run without hardware (demos, tests).
+
+    Implements the same probe()/capture() interface as SoapyRadio. Only requests whose span
+    overlaps the recorded band can be served.
+    """
+
+    def __init__(self, path: str, center_hz: float, fs: float):
+        self._cap = load_sc16(path, center_hz, fs)
+
+    def probe(self) -> dict:
+        lo, hi = self._cap.center_hz - self._cap.fs * 0.4, self._cap.center_hz + self._cap.fs * 0.4
+        return {"freq_hz": [lo, hi], "sample_rate_hz": [self._cap.fs, self._cap.fs],
+                "bandwidth_hz": [self._cap.fs * 0.8, self._cap.fs * 0.8]}
+
+    def capture(self, center_hz: float, fs: float, secs: float, gain_db: float | None = None,
+                **_) -> Capture:
+        lo, hi = self.probe()["freq_hz"]
+        if not lo <= center_hz <= hi:
+            raise RuntimeError(f"replay file only covers {lo / 1e6:.1f}-{hi / 1e6:.1f} MHz")
+        return Capture(self._cap.iq[: int(secs * self._cap.fs)], self._cap.center_hz, self._cap.fs)
