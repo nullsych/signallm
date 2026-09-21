@@ -1,6 +1,28 @@
 # signallm
 
-`signallm` is a local LLM agent with hands on an SDR: it tunes, scans, decodes, and narrates the spectrum.
+`signallm` is a local LLM agent with hands on an SDR: it tunes, scans, decodes, and narrates the spectrum:
+
+```rust
+signallm> I have connect the Blade RF device. What is in 2450 MHz now?
+
+  [12:09:10] question sent
+  [12:09:15] llm #1 5.3s | prompt 1185 tok/1.4s | gen 24 tok/3.8s (6.3 tok/s) | wants: record
+  [12:09:15] tool record(freq_mhz=2450)
+[INFO] bladerf_open_with_devinfo()
+  ⠸ running record    1s [INFO] bladerf_get_serial() = 2fb6e477cae34dadaa3889a233759d23
+  ⠸ running record    2s [INFO] setSampleRate(Rx, 0, 4.000000 MHz), actual = 4.000000 MHz
+  ⠹ running record    3s [INFO] setSampleRate(Tx, 0, 4.000000 MHz), actual = 4.000000 MHz
+  ⠧ running record    4s [INFO] setSampleRate(Rx, 0, 20.000000 MHz), actual = 20.000000 MHz
+  ⠹ running record    4s [INFO] setGainMode(Rx, 0, 1), actual = slowattack
+  ⠸ running record    5s [INFO] setSampleRate(Rx, 0, 20.000000 MHz), actual = 20.000000 MHz
+[INFO] setGainMode(Rx, 0, 1), actual = slowattack
+  [12:09:24] tool record done in 8.9s
+  [12:09:32] llm #2 8.2s | prompt 1323 tok/3.4s | gen 32 tok/4.7s (6.8 tok/s)
+
+[12:09:32] At 2450 MHz, the air is empty—no signals detected above the noise floor. The spectrum is quiet, with only background noise.  (22.3s total)
+
+signallm> /help
+```
 
 ## Status
 
