@@ -7,6 +7,7 @@ Frequencies are in MHz at this boundary because models make far fewer unit mista
 import json
 import math
 
+from .capture import DeviceError
 from .facts import analyze
 
 MAX_FS = 20e6            # sample rate we use; USB 3 headroom and the tested configuration
@@ -17,8 +18,8 @@ MAX_SIGNALS_IN_RESULT = 40
 TOOLS = [
     {"type": "function", "function": {
         "name": "describe",
-        "description": "Describe the SDR: tunable frequency range, maximum bandwidth per capture, "
-                       "and what was measured last. Call this if unsure what the hardware can do.",
+        "description": "Describe the SDR: whether it is connected, tunable frequency range, maximum bandwidth "
+                       "per capture, and what was measured last. Call this to check the hardware.",
         "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {
         "name": "record",
@@ -95,8 +96,10 @@ class Toolbox:
 
     # -- tools ----------------------------------------------------------------------------
     def describe(self, args: dict) -> dict:
+        self.limits = self.radio.probe()  # real limits once the device is available
         lo, hi = self.limits["freq_hz"]
-        return {"device": "BladeRF", "freq_range_mhz": [lo / 1e6, hi / 1e6],
+        connected = getattr(self.radio, "is_present", lambda: True)()
+        return {"device": "BladeRF", "connected": connected, "freq_range_mhz": [lo / 1e6, hi / 1e6],
                 "max_bandwidth_mhz": MAX_FS / 1e6, "clean_span_per_capture_mhz": MAX_FS * USABLE / 1e6,
                 "heuristics_cover": "2.4 GHz ISM band (WiFi, BLE advertising, microwave oven); "
                                     "elsewhere signals only get width-based labels",
@@ -113,6 +116,8 @@ class Toolbox:
             # second capture at a shifted center to reject the SDR's own spurs
             b = self.radio.capture(f + fs * 0.2, fs, secs, self.gain_db)
             facts = analyze(a, b)
+        except DeviceError as e:
+            raise ToolError(str(e)) from None
         except RuntimeError as e:
             raise ToolError(f"capture failed: {e}") from None
         interp = facts["interpretation"]
@@ -145,6 +150,8 @@ class Toolbox:
                 if not interp["signals"]:
                     empty.append([round((c - span / 2) / 1e6, 1), round((c + span / 2) / 1e6, 1)])
                 signals += [_signal_view(s, evidence=False) for s in interp["signals"]]
+        except DeviceError as e:
+            raise ToolError(str(e)) from None
         except RuntimeError as e:
             raise ToolError(f"capture failed: {e}") from None
         signals.sort(key=lambda s: s["center_mhz"])

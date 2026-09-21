@@ -2,7 +2,7 @@
 import json
 import unittest
 
-from signallm.agent import Agent
+from signallm.agent import Agent, strip_reasoning
 from signallm.tools import Toolbox
 from tests import synth
 
@@ -122,7 +122,10 @@ class Loop(unittest.TestCase):
                             {"content": "Looks like WiFi channel 6."}])
         self.assertEqual(a.ask("what is on 2.4 GHz?"), "Looks like WiFi channel 6.")
         kinds = [k for k, _ in ev]
-        self.assertEqual(kinds, ["tool_call", "tool_result"])
+        self.assertEqual(kinds, ["llm_start", "llm_end", "tool_call", "tool_result", "llm_start", "llm_end"])
+        self.assertGreaterEqual(ev[1][1]["seconds"], 0)
+        self.assertEqual(ev[1][1]["tool_calls"], ["record"])
+        self.assertIn("seconds", ev[3][1])
         # the model saw the tool result on its second turn
         second = a.llm.seen[1]
         self.assertEqual(second[-1]["role"], "tool")
@@ -134,7 +137,8 @@ class Loop(unittest.TestCase):
             args = '{"freq_mhz": 2437, "secs": 0.2}' if raw else {"freq_mhz": 2437, "secs": 0.2}
             a, ev = self.agent([tool_call("record", args, raw=raw), {"content": "ok"}])
             a.ask("q")
-            self.assertNotIn("error", ev[1][1]["result"], raw)
+            result = [d["result"] for k, d in ev if k == "tool_result"][0]
+            self.assertNotIn("error", result, raw)
 
     def test_model_corrects_itself_after_an_error(self):
         a, ev = self.agent([tool_call("record", {"freq_mhz": 2.437e9}),
@@ -147,8 +151,34 @@ class Loop(unittest.TestCase):
         # the error text reached the model
         self.assertIn("outside", a.llm.seen[1][-1]["content"])
 
+    def test_repeated_identical_call_is_not_run_again(self):
+        a, ev = self.agent([tool_call("describe", {}), tool_call("describe", {}), {"content": "done"}])
+        self.assertEqual(a.ask("q"), "done")
+        calls = [d for k, d in ev if k == "tool_call"]
+        self.assertEqual([c["repeat"] for c in calls], [False, True])
+        self.assertIn("already called", a.llm.seen[2][-1]["content"])
+
+    def test_same_tool_with_other_arguments_is_allowed(self):
+        a, ev = self.agent([tool_call("record", {"freq_mhz": 2437, "secs": 0.2}),
+                            tool_call("record", {"freq_mhz": 2426, "secs": 0.2}), {"content": "ok"}])
+        a.ask("q")
+        self.assertEqual([d["repeat"] for k, d in ev if k == "tool_call"], [False, False])
+
+    def test_abort_turn_restores_valid_history(self):
+        a, _ = self.agent([tool_call("describe", {})])
+        class Boom(FakeLLM):
+            def chat(self, messages, tools):
+                if len(self.seen) == 1:
+                    raise KeyboardInterrupt
+                return super().chat(messages, tools)
+        a.llm = Boom([tool_call("describe", {}), {"content": "x"}])
+        with self.assertRaises(KeyboardInterrupt):
+            a.ask("first")
+        a.abort_turn()
+        self.assertEqual([m["role"] for m in a.messages], ["system"])
+
     def test_gives_up_after_max_steps(self):
-        a, _ = self.agent([tool_call("describe", {})] * 20)
+        a, _ = self.agent([tool_call("describe", {"n": i}) for i in range(20)])
         a.max_steps = 3
         self.assertIn("too many tool calls", a.ask("q"))
         self.assertEqual(len(a.llm.seen), 3)
@@ -156,6 +186,18 @@ class Loop(unittest.TestCase):
     def test_think_blocks_are_stripped(self):
         a, _ = self.agent([{"content": "<think>hmm</think>The air is empty."}])
         self.assertEqual(a.ask("q"), "The air is empty.")
+
+    def test_reasoning_without_opening_tag_is_stripped(self):
+        # some chat templates open the <think> block inside the prompt, so only </think> shows up
+        a, _ = self.agent([{"content": "Okay, the user asks... let me think.\n</think>\n\nThe air is empty."}])
+        self.assertEqual(a.ask("q"), "The air is empty.")
+        self.assertNotIn("think", a.messages[-1]["content"])  # history stays clean too
+
+    def test_strip_reasoning_cases(self):
+        self.assertEqual(strip_reasoning("<think>a</think>b"), "b")
+        self.assertEqual(strip_reasoning("plain"), "plain")
+        self.assertEqual(strip_reasoning("x</think>y"), "y")
+        self.assertEqual(strip_reasoning(""), "")
 
     def test_old_tool_results_are_compacted_on_the_next_question(self):
         a, _ = self.agent([tool_call("scan", {"start_mhz": 2400, "stop_mhz": 2440}), {"content": "a"},

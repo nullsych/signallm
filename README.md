@@ -97,11 +97,20 @@ text so the model can fix its call and retry. Frequencies are in MHz at the tool
 models make fewer unit mistakes that way. Slash commands `/device`, `/record`, `/scan` run the tools
 directly without an LLM, `/reset` clears the conversation.
 
-**LLM backend.** Any OpenAI-compatible endpoint with tool calling. Ollama
-(`localhost:11434`) and llama.cpp `llama-server` (`localhost:8080`) are auto-detected; otherwise pass
-`--base-url` and `--model`. Suggested: `ollama pull qwen3:8b` (or `qwen3:4b` on a weak machine).
-Ollama's default context window (4096 tokens) is too small for scan results and is truncated
-silently; start it with `OLLAMA_CONTEXT_LENGTH=8192`.
+**LLM backend.** Ollama (`localhost:11434`, native API) and llama.cpp `llama-server`
+(`localhost:8080`, OpenAI-compatible) are auto-detected; for another endpoint pass `--base-url` and
+`--model`. Nothing has to be configured on the server: the client sends the context size (8192),
+`think=false` and `keep_alive` with every request. If the model is missing, the chat offers to
+download it.
+
+The default model is `qwen3:4b-instruct` (~2.5 GB). Plain `qwen3:4b` is now a *thinking-only*
+model: it reasons for minutes on a CPU and the reasoning cannot be switched off, so it is avoided.
+Reference timings on a 6-core CPU without a GPU: about 6 tokens/s, a question that needs one tool
+call takes ~30 s; `--think` re-enables reasoning for models that support it.
+
+Debug output is on: every question, model call and tool run gets a timestamp with token counts and
+speed, and a spinner shows that work is in progress. `--no-debug` hides it; Ctrl+C cancels the
+current question (and the generation on the Ollama side).
 
 **Without hardware:** `python3 -m signallm --replay tests/cap.bin --replay-center 2437e6`
 serves a recorded file as the radio (the two-capture spur check is meaningless there).
@@ -123,6 +132,18 @@ python3 -m signallm.facts --file a.bin --center 2437e6 --file-b b.bin --center-b
 
 Options: `--fs` (default 20e6), `--secs` (default 1.0), `--gain` (dB; omit for AGC),
 `--single` (skip the second capture), `--png out.png` (spectrogram).
+
+### Device checks
+
+The chat always starts, with or without a BladeRF. The hardware is only touched by real
+measurements (`record`, `scan`), and before each of them the program checks that the device is on
+the USB bus. If it is not, the tool returns a plain "No BladeRF connected" message (USB 3.0 / udev /
+driver hints) that the model relays to you, and the chat keeps running. You can plug the SDR in
+later, or unplug and replug it, without restarting: it is reopened on the next measurement.
+Other cases get their own message: the device is found but busy (another program has it open), the
+SoapySDR Python bindings are missing, the cable was pulled mid-capture. `describe` reports
+`connected: true/false`. Argument validation works without a device using BladeRF 2.0 defaults
+(70-6000 MHz). `--replay FILE` runs the chat with a recorded file instead of hardware.
 
 ### Known issue: garbage IQ from SoapySDR
 

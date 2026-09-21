@@ -12,6 +12,7 @@ class Handler(BaseHTTPRequestHandler):
     requests = []
     tags = {"models": [{"name": "llama3.2:1b"}, {"name": "qwen3:8b"}]}
     status = 200
+    pull_events = []
 
     def log_message(self, *a):
         pass
@@ -31,6 +32,15 @@ class Handler(BaseHTTPRequestHandler):
         Handler.requests.append((self.path, dict(self.headers), body))
         if Handler.status != 200:
             return self._send({"error": {"message": "model not found"}}, Handler.status)
+        if self.path == "/api/chat":
+            return self._send({"message": {"role": "assistant", "content": "", "tool_calls": [
+                {"function": {"name": "describe", "arguments": {}}}]}})
+        if self.path == "/api/pull":
+            self.send_response(200)
+            self.end_headers()
+            for ev in Handler.pull_events:
+                self.wfile.write((json.dumps(ev) + "\n").encode())
+            return
         self._send({"choices": [{"message": {"role": "assistant", "content": "hi", "tool_calls": [
             {"id": "x", "type": "function", "function": {"name": "describe", "arguments": "{}"}}]}}]})
 
@@ -72,13 +82,13 @@ class LLM(unittest.TestCase):
 
     def test_detect_prefers_tool_capable_model(self):
         with mock.patch.object(llm, "OLLAMA_URL", self.url):
-            self.assertEqual(llm.detect_backend(), (self.url + "/v1", "qwen3:8b"))
+            self.assertEqual(llm.detect_backend(), ("ollama", self.url, "qwen3:8b"))
 
     def test_detect_with_no_models_pulled(self):
         Handler.tags = {"models": []}
         try:
             with mock.patch.object(llm, "OLLAMA_URL", self.url):
-                self.assertEqual(llm.detect_backend(), (self.url + "/v1", None))
+                self.assertEqual(llm.detect_backend(), ("ollama", self.url, None))
         finally:
             Handler.tags = {"models": [{"name": "llama3.2:1b"}, {"name": "qwen3:8b"}]}
 
@@ -90,7 +100,57 @@ class LLM(unittest.TestCase):
     def test_detect_llama_server_fallback(self):
         with mock.patch.object(llm, "OLLAMA_URL", "http://127.0.0.1:9"), \
                 mock.patch.object(llm, "LLAMA_SERVER_URL", self.url):
-            self.assertEqual(llm.detect_backend(), (self.url + "/v1", "default"))
+            self.assertEqual(llm.detect_backend(), ("openai", self.url + "/v1", "default"))
+
+    def test_ollama_client_sets_context_think_and_keepalive_per_request(self):
+        msg = llm.OllamaClient(self.url, "m").chat([{"role": "user", "content": "q"}], [{"type": "function"}])
+        self.assertEqual(msg["tool_calls"][0]["function"]["arguments"], {})
+        path, _, body = Handler.requests[0]
+        self.assertEqual(path, "/api/chat")
+        self.assertIs(body["think"], False)
+        self.assertEqual(body["options"]["num_ctx"], llm.NUM_CTX)
+        self.assertGreaterEqual(llm.NUM_CTX, 8192)
+        self.assertEqual(body["keep_alive"], llm.KEEP_ALIVE)
+        self.assertIs(body["stream"], False)
+
+    def test_ollama_client_think_can_be_enabled(self):
+        llm.OllamaClient(self.url, "m", think=True).chat([], [])
+        self.assertIs(Handler.requests[0][2]["think"], True)
+
+    def test_openai_client_disables_reasoning_by_default(self):
+        llm.LLMClient(self.url + "/v1", "m").chat([], [])
+        self.assertEqual(Handler.requests[0][2]["reasoning_effort"], "none")
+        Handler.requests.clear()
+        llm.LLMClient(self.url + "/v1", "m", think=True).chat([], [])
+        self.assertNotIn("reasoning_effort", Handler.requests[0][2])
+
+    def test_ollama_models_and_pull_progress(self):
+        self.assertEqual(llm.ollama_models(self.url), ["llama3.2:1b", "qwen3:8b"])
+        Handler.pull_events = [{"status": "pulling manifest"},
+                               {"status": "pulling abc", "total": 100, "completed": 50},
+                               {"status": "success"}]
+        seen = []
+        llm.pull_model(self.url, "qwen3:4b", lambda *a: seen.append(a))
+        self.assertEqual(seen[1], ("pulling abc", 50, 100))
+        self.assertEqual(seen[-1][0], "success")
+        self.assertEqual(Handler.requests[0][2]["model"], "qwen3:4b")
+
+    def test_pull_error_event_is_reported(self):
+        Handler.pull_events = [{"error": "pull model manifest: file does not exist"}]
+        with self.assertRaisesRegex(llm.LLMError, "could not download nope.*does not exist"):
+            llm.pull_model(self.url, "nope")
+
+    def test_pick_model_prefers_non_reasoning_build(self):
+        # plain qwen3:4b is a thinking-only model now; the instruct build answers in seconds
+        self.assertEqual(llm.pick_model(["qwen3:4b", "qwen3:4b-instruct", "llama3.2:1b"]), "qwen3:4b-instruct")
+        self.assertEqual(llm.pick_model(["llama3.2:1b", "mistral:7b"]), "llama3.2:1b")
+        self.assertEqual(llm.pick_model(["gemma3:4b"]), "gemma3:4b")
+        self.assertIsNone(llm.pick_model([]))
+        self.assertIn("instruct", llm.DEFAULT_MODEL)
+
+    def test_make_client_picks_protocol(self):
+        self.assertIsInstance(llm.make_client("ollama", self.url, "m"), llm.OllamaClient)
+        self.assertIsInstance(llm.make_client("openai", self.url, "m"), llm.LLMClient)
 
 
 if __name__ == "__main__":
